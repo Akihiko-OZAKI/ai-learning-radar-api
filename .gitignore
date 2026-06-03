@@ -1,0 +1,15 @@
+# 生データDB（大きいのでGitに含めない）
+db/raw.db
+db/observatory.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+.venv/
+venv/
+
+# ログ
+*.log
+/tmp/

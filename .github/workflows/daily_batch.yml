@@ -1,0 +1,47 @@
+name: Daily Batch - Collect, Extract, Score, Deploy
+
+on:
+  schedule:
+    # 毎日 JST 06:00 (UTC 21:00) に実行
+    - cron: '0 21 * * *'
+  workflow_dispatch:  # 手動実行も可能
+
+jobs:
+  batch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run daily batch
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN_API }}
+        run: |
+          python3 main.py --show-ranking 2>&1 | tee /tmp/batch.log
+          echo "Exit code: $?"
+
+      - name: Show ranking summary
+        run: tail -50 /tmp/batch.log || true
+
+      - name: Commit updated app.db
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add db/app.db
+          # 変更がある場合のみコミット
+          git diff --staged --quiet || git commit -m "chore: daily batch $(date -u '+%Y-%m-%d')"
+          git push
