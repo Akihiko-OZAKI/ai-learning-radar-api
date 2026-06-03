@@ -28,7 +28,7 @@ jobs:
 
       - name: Run daily batch
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN_API }}
         run: |
           python3 main.py --show-ranking 2>&1 | tee /tmp/batch.log

@@ -1,55 +1,34 @@
 """
-LLM 用語抽出モジュール
+LLM 用語抽出モジュール（Anthropic Claude版）
 
-役割:
-  1. 収集テキスト（GitHub description/topics + HN title）から
-     辞書DBに未登録の AI 技術用語を発見する。
-  2. 発見した用語にテーマ（theme）とカテゴリ（category）を付与する。
-  3. 新規登録用語の説明文（100〜300文字）を生成する。
-
-LLM の使用は上記3用途のみ。ランキング計算には一切使用しない。
+LLMの使用は「新規用語発見・テーマ付与・説明文生成」のみ。
+ランキング計算には一切使用しない。
 """
 
 import json
 import logging
-import os
 import textwrap
 from datetime import date
 from typing import Optional
 
-from openai import OpenAI
+import anthropic
 
 from db import get_connection, get_raw_connection
 
 logger = logging.getLogger(__name__)
 
-client = OpenAI()  # OPENAI_API_KEY は環境変数から自動取得
+client = anthropic.Anthropic()  # ANTHROPIC_API_KEY は環境変数から自動取得
+LLM_MODEL = "claude-3-5-haiku-20241022"
 
-# 使用モデル（コスト最小化のため小型モデルを使用）
-LLM_MODEL = "gpt-4.1-mini"
-
-# テーマ選択肢（プロンプトに埋め込む）
 THEME_OPTIONS = [
-    "llm",
-    "ai_coding",
-    "ai_agent",
-    "tool_integration",
-    "retrieval",
-    "ai_infra",
-    "multimodal",
-    "ai_framework",
-    "other",
+    "llm", "ai_coding", "ai_agent", "tool_integration",
+    "retrieval", "ai_infra", "multimodal", "ai_framework", "other",
 ]
-
-# カテゴリ選択肢
 CATEGORY_OPTIONS = ["Model", "Tool", "Framework", "Protocol", "Agent", "Library", "Other"]
-
-# 1回の LLM 呼び出しに渡すテキスト件数（チャンクサイズ）
 CHUNK_SIZE = 80
 
 
 def _get_known_terms() -> set[str]:
-    """辞書DBに登録済みの用語名（小文字）を返す。"""
     conn = get_connection()
     rows = conn.execute("SELECT term_name FROM terms").fetchall()
     conn.close()
@@ -57,77 +36,63 @@ def _get_known_terms() -> set[str]:
 
 
 def _get_theme_id(theme_key: str) -> Optional[int]:
-    """theme_key から theme_id を返す。"""
     conn = get_connection()
-    row = conn.execute(
-        "SELECT theme_id FROM themes WHERE theme_key=?", (theme_key,)
-    ).fetchone()
+    row = conn.execute("SELECT theme_id FROM themes WHERE theme_key=?", (theme_key,)).fetchone()
     conn.close()
     return row["theme_id"] if row else None
 
 
 def _build_extraction_prompt(texts: list[str], known_terms: set[str]) -> str:
-    """用語抽出プロンプトを構築する。"""
-    known_sample = ", ".join(sorted(known_terms)[:30]) if known_terms else "（なし）"
-    texts_block = "\n".join(f"- {t}" for t in texts)
+    known_sample = ", ".join(sorted(known_terms)[:40]) if known_terms else "（なし）"
+    texts_block = "\n".join(f"- {t[:200]}" for t in texts)
     theme_list = ", ".join(THEME_OPTIONS)
     category_list = ", ".join(CATEGORY_OPTIONS)
 
     return textwrap.dedent(f"""
         あなたはAI技術トレンドの専門家です。
-        以下のテキストリストから、AI技術に関連する固有の技術用語を抽出してください。
+        以下のテキストから、現在注目されているAI技術の固有名詞・ツール名・モデル名・フレームワーク名のみを抽出してください。
 
-        ## 抽出ルール
-        - 対象: LLM、AIモデル、AIツール、AIフレームワーク、AIエージェント関連技術、AIプロトコル、AI開発環境
-        - 除外: 個人名、GitHubユーザー名、URL、一般名詞、ノイズワード、汎用的な英単語
-        - 除外: 以下の既知用語（辞書登録済み）: {known_sample}
-        - 1〜4単語程度の固有名詞・技術名のみ抽出すること
+        ## 抽出基準（厳格に適用）
+        - 対象: LLM、生成AI、AIエージェント、AIコーディングツール、AIプロトコル、RAGシステム、マルチモーダルAI
+        - 対象: 具体的な製品名・サービス名・技術名（例: Claude Code, LangGraph, MCP, Cursor, vLLM）
+        - 除外: 汎用プログラミング言語（Python, JavaScript等）
+        - 除外: 汎用インフラ（Docker, Kubernetes, AWS等）
+        - 除外: 古典的MLアルゴリズム（CNN, RNN, LSTM等）
+        - 除外: 既知用語: {known_sample}
+        - 1〜4単語の固有名詞のみ
 
-        ## 出力形式
-        以下のJSON形式で返すこと:
+        ## 出力形式（JSONのみ、説明文不要）
         {{"terms": [
           {{"term": "用語名", "theme": "テーマキー", "category": "カテゴリ"}}
         ]}}
+        テーマキー: {theme_list}
+        カテゴリ: {category_list}
 
-        - term: 用語名（英語表記を優先、例: "LangGraph", "MCP", "Claude Code"）
-        - theme: テーマキー（{theme_list} のいずれか1つ）
-        - category: カテゴリ（{category_list} のいずれか1つ）
-
-        ## テキストリスト
+        ## テキスト
         {texts_block}
     """).strip()
 
 
-def _build_description_prompt(term: str) -> str:
-    """用語の説明文生成プロンプトを構築する。"""
-    return textwrap.dedent(f"""
-        AI技術用語「{term}」について、日本語で100〜300文字の簡潔な説明文を書いてください。
-        対象読者は日本人IT技術者・AI学習者です。
-        説明文のみを返してください。
-    """).strip()
-
-
 def _extract_terms_from_texts(texts: list[str], known_terms: set[str]) -> list[dict]:
-    """テキストリストから新規 AI 用語を LLM で抽出する。"""
     results = []
     for i in range(0, len(texts), CHUNK_SIZE):
-        chunk = texts[i : i + CHUNK_SIZE]
+        chunk = texts[i:i + CHUNK_SIZE]
         prompt = _build_extraction_prompt(chunk, known_terms)
         try:
-            resp = client.chat.completions.create(
+            message = client.messages.create(
                 model=LLM_MODEL,
+                max_tokens=1024,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0,  # 決定論的な出力
-                response_format={"type": "json_object"},
             )
-            content = resp.choices[0].message.content or "{\"terms\":[]}"
-            # JSON オブジェクト形式 {"terms": [...]} で返ってくる
+            content = message.content[0].text if message.content else '{"terms":[]}'
+            start = content.find("{")
+            end = content.rfind("}") + 1
+            if start >= 0 and end > start:
+                content = content[start:end]
             parsed = json.loads(content)
             if isinstance(parsed, dict):
-                # "terms" キーを優先して取得
                 items = parsed.get("terms", [])
                 if not items:
-                    # フォールバック: 最初のリスト値を使う
                     for v in parsed.values():
                         if isinstance(v, list):
                             items = v
@@ -135,43 +100,34 @@ def _extract_terms_from_texts(texts: list[str], known_terms: set[str]) -> list[d
                 results.extend(items)
             elif isinstance(parsed, list):
                 results.extend(parsed)
+            logger.info(f"[LLM] Chunk {i//CHUNK_SIZE+1}: extracted {len(results)} terms total")
         except Exception as e:
             logger.error(f"[LLM] Extraction error (chunk {i}): {e}")
     return results
 
 
 def _generate_description(term: str) -> str:
-    """用語の説明文を LLM で生成する。"""
-    prompt = _build_description_prompt(term)
     try:
-        resp = client.chat.completions.create(
+        message = client.messages.create(
             model=LLM_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
             max_tokens=400,
+            messages=[{"role": "user", "content": f"AI技術用語「{term}」について、日本語で100〜200文字の簡潔な説明文を書いてください。説明文のみ返してください。"}],
         )
-        return (resp.choices[0].message.content or "").strip()
+        return (message.content[0].text if message.content else "").strip()
     except Exception as e:
-        logger.error(f"[LLM] Description generation error for '{term}': {e}")
+        logger.error(f"[LLM] Description error for '{term}': {e}")
         return ""
 
 
 def _collect_texts_for_today() -> list[str]:
-    """本日収集した GitHub・HN のテキストを結合して返す。"""
     today = str(date.today())
     conn = get_raw_connection()
-
-    # GitHub: repo_name + description + topics
     gh_rows = conn.execute(
-        "SELECT repo_name, description, topics FROM raw_github WHERE collected_at=?",
-        (today,),
+        "SELECT repo_name, description, topics FROM raw_github WHERE collected_at=?", (today,)
     ).fetchall()
-
-    # HN: title
     hn_rows = conn.execute(
         "SELECT title FROM raw_hn WHERE collected_at=?", (today,)
     ).fetchall()
-
     conn.close()
 
     texts = []
@@ -181,25 +137,16 @@ def _collect_texts_for_today() -> list[str]:
             parts.append(row["description"])
         if row["topics"]:
             try:
-                topics = json.loads(row["topics"])
-                parts.extend(topics)
+                parts.extend(json.loads(row["topics"]))
             except Exception:
                 pass
         texts.append(" | ".join(parts))
-
     for row in hn_rows:
         texts.append(row["title"])
-
     return texts
 
 
 def run_extraction() -> int:
-    """
-    本日の収集データから新規 AI 用語を抽出し、terms テーブルに候補登録する。
-
-    Returns:
-        新規登録した用語数
-    """
     today = date.today()
     known_terms = _get_known_terms()
     texts = _collect_texts_for_today()
@@ -211,7 +158,6 @@ def run_extraction() -> int:
     logger.info(f"[LLM] Extracting terms from {len(texts)} texts...")
     extracted = _extract_terms_from_texts(texts, known_terms)
 
-    # 重複排除（大文字小文字を無視）
     seen: set[str] = set(known_terms)
     new_terms = []
     for item in extracted:
@@ -231,17 +177,11 @@ def run_extraction() -> int:
             theme_key = item.get("theme", "other")
             category = item.get("category", "Other")
             theme_id = _get_theme_id(theme_key)
-
-            # 説明文を生成
             description = _generate_description(term_name)
-
             conn.execute(
-                """
-                INSERT OR IGNORE INTO terms
-                    (term_name, theme_id, category, first_seen, last_seen,
-                     description, is_permanent)
-                VALUES (?, ?, ?, ?, ?, ?, 0)
-                """,
+                """INSERT OR IGNORE INTO terms
+                    (term_name, theme_id, category, first_seen, last_seen, description, is_permanent)
+                   VALUES (?, ?, ?, ?, ?, ?, 0)""",
                 (term_name, theme_id, category, str(today), str(today), description),
             )
             registered += 1
