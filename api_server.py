@@ -41,6 +41,14 @@ def _today() -> str:
     return str(date.today())
 
 
+def _latest_date() -> str:
+    """daily_scoresに存在する最新の日付を返す。なければ今日を返す。"""
+    conn = get_connection()
+    row = conn.execute("SELECT MAX(date) as d FROM daily_scores").fetchone()
+    conn.close()
+    return row["d"] if row and row["d"] else _today()
+
+
 @app.get("/api/status")
 def get_status():
     """最終更新日時・登録用語数・is_permanent用語数を返す。"""
@@ -66,7 +74,7 @@ def get_popular_ranking(
     limit: int = Query(20, ge=1, le=100),
 ):
     """人気ランキング（total_score 降順）。"""
-    d = date or _today()
+    d = date or _latest_date()
     conn = get_connection()
     rows = conn.execute(
         """
@@ -97,7 +105,7 @@ def get_rising_ranking(
     limit: int = Query(20, ge=1, le=100),
 ):
     """急上昇ランキング（rank_change 降順）。"""
-    d = date or _today()
+    d = date or _latest_date()
     conn = get_connection()
     rows = conn.execute(
         """
@@ -130,7 +138,7 @@ def get_theme_ranking(
     limit: int = Query(9, ge=1, le=20),
 ):
     """テーマランキング（テーマ別 total_score 合計の降順）。"""
-    d = date or _today()
+    d = date or _latest_date()
     conn = get_connection()
     rows = conn.execute(
         """
