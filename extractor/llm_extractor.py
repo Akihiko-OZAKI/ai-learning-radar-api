@@ -18,7 +18,7 @@ from db import get_connection, get_raw_connection
 logger = logging.getLogger(__name__)
 
 client = anthropic.Anthropic()  # ANTHROPIC_API_KEY は環境変数から自動取得
-LLM_MODEL = "claude-3-5-haiku-20241022"
+LLM_MODEL = "claude-haiku-4-5"
 
 THEME_OPTIONS = [
     "llm", "ai_coding", "ai_agent", "tool_integration",
