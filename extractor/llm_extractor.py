@@ -158,11 +158,30 @@ def run_extraction() -> int:
     logger.info(f"[LLM] Extracting terms from {len(texts)} texts...")
     extracted = _extract_terms_from_texts(texts, known_terms)
 
+    # ── ノイズフィルタ ────────────────────────────────────────
+    # 1文字は除外（例: "Y", "a" など）
+    # 汎用インフラ・言語の除外リスト
+    NOISE_TERMS = {
+        "aws", "gcp", "azure", "docker", "kubernetes", "k8s",
+        "python", "javascript", "typescript", "java", "go", "rust", "c",
+        "linux", "windows", "macos", "ios", "android",
+        "git", "github", "gitlab", "npm", "pip",
+        "sql", "mysql", "postgres", "mongodb", "redis",
+        "html", "css", "json", "xml", "yaml",
+    }
+
     seen: set[str] = set(known_terms)
     new_terms = []
     for item in extracted:
         term_name = (item.get("term") or "").strip()
-        if not term_name or term_name.lower() in seen:
+        if not term_name:
+            continue
+        # 1文字は除外
+        if len(term_name) <= 1:
+            logger.debug(f"[LLM] Skipped (too short): '{term_name}'")
+            continue
+        # 既知用語・ノイズは除外
+        if term_name.lower() in seen or term_name.lower() in NOISE_TERMS:
             continue
         seen.add(term_name.lower())
         new_terms.append(item)
