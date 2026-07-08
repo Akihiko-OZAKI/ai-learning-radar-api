@@ -291,6 +291,49 @@ def get_volatility(
     return calc_volatility_index(target_date=date)
 
 
+@app.get("/api/term/{term_name}/news")
+def get_term_news(
+    term_name: str,
+    days: int = Query(30, ge=1, le=90),
+    limit: int = Query(10, ge=1, le=30),
+):
+    """
+    用語に関連する HN 記事を返す。
+
+    用語名を含む HN タイトルを過去 N 日分の raw_hn から検索する。
+    スコア順にソートして返す。
+
+    Returns:
+        {
+            "term_name": str,
+            "items": [
+                {
+                    "title": str,
+                    "score": int,
+                    "comments": int,
+                    "collected_at": str,
+                    "hn_id": int
+                }
+            ]
+        }
+    """
+    from db import get_raw_connection
+    conn = get_raw_connection()
+    rows = conn.execute(
+        """
+        SELECT title, score, comments, collected_at, hn_id
+        FROM raw_hn
+        WHERE LOWER(title) LIKE LOWER(?)
+          AND collected_at >= date('now', ?)
+        ORDER BY score DESC, comments DESC
+        LIMIT ?
+        """,
+        (f"%{term_name}%", f"-{days} days", limit),
+    ).fetchall()
+    conn.close()
+    return {"term_name": term_name, "items": [dict(r) for r in rows]}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)
