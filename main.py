@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from db import init_db
 from collectors import collect_github, collect_hn
 from extractor import run_extraction
-from scorer import run_scoring, print_rankings
+from scorer import run_scoring, print_rankings, run_news_indexing
 
 logging.basicConfig(
     level=logging.INFO,
@@ -71,9 +71,15 @@ def main():
         logger.info("Step 3/4: LLM 用語抽出 スキップ")
 
     # ── Step 4: 決定論的スコアリング＋ランキング生成 ──────────
-    logger.info("Step 4/4: スコアリング＋ランキング生成")
+    logger.info("Step 4/5: スコアリング＋ランキング生成")
     scored = run_scoring()
     logger.info(f"  → {scored} 用語のスコアを記録")
+
+    # ── Step 5: Hot News インデクシング ──────────────────
+    if not args.skip_collect:
+        logger.info("Step 5/5: Hot News インデクシング")
+        news_saved = run_news_indexing()
+        logger.info(f"  → {news_saved} 件のニュースを保存")
 
     # ── オプション: ランキング表示 ────────────────────────────
     if args.show_ranking:

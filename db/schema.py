@@ -62,6 +62,20 @@ CREATE TABLE IF NOT EXISTS daily_scores (
     rise_reason  TEXT,
     UNIQUE(term_id, date)
 );
+
+CREATE TABLE IF NOT EXISTS term_news (
+    news_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    term_id      INTEGER NOT NULL REFERENCES terms(term_id),
+    hn_id        INTEGER NOT NULL,
+    title        TEXT    NOT NULL,
+    score        INTEGER NOT NULL DEFAULT 0,
+    comments     INTEGER NOT NULL DEFAULT 0,
+    collected_at DATE    NOT NULL,
+    UNIQUE(term_id, hn_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_term_news_term_id ON term_news(term_id);
+CREATE INDEX IF NOT EXISTS idx_term_news_collected_at ON term_news(collected_at);
 """
 
 RAW_DDL = """

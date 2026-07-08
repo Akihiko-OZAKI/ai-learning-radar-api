@@ -299,9 +299,7 @@ def get_term_news(
 ):
     """
     用語に関連する HN 記事を返す。
-
-    用語名を含む HN タイトルを過去 N 日分の raw_hn から検索する。
-    スコア順にソートして返す。
+    app.db の term_news テーブルを参照する。
 
     Returns:
         {
@@ -317,18 +315,26 @@ def get_term_news(
             ]
         }
     """
-    from db import get_raw_connection
-    conn = get_raw_connection()
+    conn = get_connection()
+    # term_idを取得
+    term_row = conn.execute(
+        "SELECT term_id FROM terms WHERE LOWER(term_name) = LOWER(?)",
+        (term_name,),
+    ).fetchone()
+    if not term_row:
+        conn.close()
+        return {"term_name": term_name, "items": []}
+
     rows = conn.execute(
         """
         SELECT title, score, comments, collected_at, hn_id
-        FROM raw_hn
-        WHERE LOWER(title) LIKE LOWER(?)
+        FROM term_news
+        WHERE term_id = ?
           AND collected_at >= date('now', ?)
         ORDER BY score DESC, comments DESC
         LIMIT ?
         """,
-        (f"%{term_name}%", f"-{days} days", limit),
+        (term_row["term_id"], f"-{days} days", limit),
     ).fetchall()
     conn.close()
     return {"term_name": term_name, "items": [dict(r) for r in rows]}
