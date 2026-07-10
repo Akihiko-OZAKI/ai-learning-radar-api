@@ -180,7 +180,14 @@ def calc_volatility_index(target_date: Optional[str] = None) -> dict:
             }
         }
     """
-    today = target_date or str(date.today())
+    # target_date指定なしの場合、daily_scoresの最新日付を使用
+    if target_date:
+        today = target_date
+    else:
+        conn = get_connection()
+        row = conn.execute("SELECT MAX(date) FROM daily_scores").fetchone()
+        conn.close()
+        today = row[0] if row and row[0] else str(date.today())
     yesterday = str(date.fromisoformat(today) - timedelta(days=1))
 
     surge_rate    = _calc_surge_rate(today, yesterday)
