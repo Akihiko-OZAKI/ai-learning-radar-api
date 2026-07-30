@@ -50,16 +50,32 @@ def _build_extraction_prompt(texts: list[str], known_terms: set[str]) -> str:
 
     return textwrap.dedent(f"""
         あなたはAI技術トレンドの専門家です。
-        以下のテキストから、現在注目されているAI技術の固有名詞・ツール名・モデル名・フレームワーク名のみを抽出してください。
+        以下のテキストから、「AI技術そのもの」の固有名詞のみを厳格に抽出してください。
 
-        ## 抽出基準（厳格に適用）
-        - 対象: LLM、生成AI、AIエージェント、AIコーディングツール、AIプロトコル、RAGシステム、マルチモーダルAI
-        - 対象: 具体的な製品名・サービス名・技術名（例: Claude Code, LangGraph, MCP, Cursor, vLLM）
-        - 除外: 汎用プログラミング言語（Python, JavaScript等）
-        - 除外: 汎用インフラ（Docker, Kubernetes, AWS等）
-        - 除外: 古典的MLアルゴリズム（CNN, RNN, LSTM等）
-        - 除外: 既知用語: {known_sample}
-        - 1〜4単語の固有名詞のみ
+        ## 抽出対象（これらのみ）
+        - LLMモデル名: GPT-4o, Claude 3.5, Llama, Gemini, Mistral, Qwen等
+        - AIフレームワーク・ライブラリ: LangChain, LangGraph, PyTorch, Transformers等
+        - AIプロトコル・規格: MCP, A2A, OpenAI API等
+        - AI推論・サービングインフラ: vLLM, Ollama, Groq, Together AI等
+        - RAG・ベクトル検索技術: RAG, FAISS, Chroma, Weaviate等
+        - AIエージェントフレームワーク: AutoGPT, CrewAI, LangGraph等
+        - マルチモーダルAI技術: Sora, DALL-E, Stable Diffusion等
+        - AI評価・ベンチマーク: MMLU, HumanEval, SWE-bench等
+        - AI研究機関・主要AI企業: Anthropic, OpenAI, Mistral AI, DeepMind等
+        - AIコーディングツール（IDE統合型）: Cursor, Copilot, Cline, Continue等
+
+        ## 除外対象（絶対に含めない）
+        - AIを「使った」アプリ・サービス（料理アプリ、ライティングツール、チャットボット等）
+        - 汎用プログラミング言語（Python, JavaScript, Rust等）
+        - 汎用インフラ（Docker, Kubernetes, AWS, GCP等）
+        - 古典的MLアルゴリズム（CNN, RNN, LSTM等）
+        - 意味不明な略語・造語
+        - 特定企業の内部ツール名（AI技術そのものでないもの）
+        - 既知用語: {known_sample}
+
+        ## 判断基準
+        「この用語はAI技術者が技術文書で使う専門用語か？」→YES なら抽出
+        「これはAIを使ったサービス/アプリの名前か？」→YES なら除外
 
         ## 出力形式（JSONのみ、説明文不要）
         {{"terms": [
