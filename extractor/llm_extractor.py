@@ -1,24 +1,44 @@
 """
-LLM 用語抽出モジュール（Anthropic Claude版）
+LLM 用語抽出モジュール（Groq / OpenAI互換版）
 
 LLMの使用は「新規用語発見・テーマ付与・説明文生成」のみ。
 ランキング計算には一切使用しない。
+
+対応LLMプロバイダー（環境変数で切り替え）:
+  GROQ_API_KEY が設定されている場合 → Groq (llama-3.3-70b-versatile)
+  OPENAI_API_KEY が設定されている場合 → OpenAI (gpt-4o-mini)
+  どちらもない場合 → スキップ
 """
 
 import json
 import logging
+import os
 import textwrap
 from datetime import date
 from typing import Optional
-
-import anthropic
 
 from db import get_connection, get_raw_connection
 
 logger = logging.getLogger(__name__)
 
-client = anthropic.Anthropic()  # ANTHROPIC_API_KEY は環境変数から自動取得
-LLM_MODEL = "claude-haiku-4-5"
+# ── LLMクライアントの初期化（Groq優先） ────────────────────────
+def _init_client():
+    groq_key = os.environ.get("GROQ_API_KEY")
+    openai_key = os.environ.get("OPENAI_API_KEY")
+
+    if groq_key:
+        from groq import Groq
+        logger.info("[LLM] Using Groq (llama-3.3-70b-versatile)")
+        return Groq(api_key=groq_key), "llama-3.3-70b-versatile", "groq"
+    elif openai_key:
+        from openai import OpenAI
+        logger.info("[LLM] Using OpenAI (gpt-4o-mini)")
+        return OpenAI(api_key=openai_key), "gpt-4o-mini", "openai"
+    else:
+        logger.warning("[LLM] No API key found. LLM extraction will be skipped.")
+        return None, None, None
+
+client, LLM_MODEL, LLM_PROVIDER = _init_client()
 
 THEME_OPTIONS = [
     "llm", "ai_coding", "ai_agent", "tool_integration",
@@ -89,18 +109,27 @@ def _build_extraction_prompt(texts: list[str], known_terms: set[str]) -> str:
     """).strip()
 
 
+def _call_llm(prompt: str, max_tokens: int = 1024) -> str:
+    """LLMを呼び出してテキストを返す（Groq/OpenAI共通インターフェース）。"""
+    if client is None:
+        return '{"terms":[]}'
+    resp = client.chat.completions.create(
+        model=LLM_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=max_tokens,
+    )
+    return resp.choices[0].message.content or '{"terms":[]}'
+
+
 def _extract_terms_from_texts(texts: list[str], known_terms: set[str]) -> list[dict]:
+    if client is None:
+        return []
     results = []
     for i in range(0, len(texts), CHUNK_SIZE):
         chunk = texts[i:i + CHUNK_SIZE]
         prompt = _build_extraction_prompt(chunk, known_terms)
         try:
-            message = client.messages.create(
-                model=LLM_MODEL,
-                max_tokens=1024,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            content = message.content[0].text if message.content else '{"terms":[]}'
+            content = _call_llm(prompt, max_tokens=1024)
             start = content.find("{")
             end = content.rfind("}") + 1
             if start >= 0 and end > start:
@@ -123,13 +152,14 @@ def _extract_terms_from_texts(texts: list[str], known_terms: set[str]) -> list[d
 
 
 def _generate_description(term: str) -> str:
+    if client is None:
+        return ""
     try:
-        message = client.messages.create(
-            model=LLM_MODEL,
+        content = _call_llm(
+            f"AI技術用語「{term}」について、日本語で100〜200文字の簡潔な説明文を書いてください。説明文のみ返してください。",
             max_tokens=400,
-            messages=[{"role": "user", "content": f"AI技術用語「{term}」について、日本語で100〜200文字の簡潔な説明文を書いてください。説明文のみ返してください。"}],
         )
-        return (message.content[0].text if message.content else "").strip()
+        return content.strip()
     except Exception as e:
         logger.error(f"[LLM] Description error for '{term}': {e}")
         return ""
@@ -163,6 +193,10 @@ def _collect_texts_for_today() -> list[str]:
 
 
 def run_extraction() -> int:
+    if client is None:
+        logger.warning("[LLM] No LLM client available. Skipping extraction.")
+        return 0
+
     today = date.today()
     known_terms = _get_known_terms()
     texts = _collect_texts_for_today()
@@ -171,12 +205,10 @@ def run_extraction() -> int:
         logger.warning("[LLM] No texts to extract from. Skipping.")
         return 0
 
-    logger.info(f"[LLM] Extracting terms from {len(texts)} texts...")
+    logger.info(f"[LLM] Extracting terms from {len(texts)} texts using {LLM_PROVIDER}/{LLM_MODEL}...")
     extracted = _extract_terms_from_texts(texts, known_terms)
 
     # ── ノイズフィルタ ────────────────────────────────────────
-    # 1文字は除外（例: "Y", "a" など）
-    # 汎用インフラ・言語の除外リスト
     NOISE_TERMS = {
         "aws", "gcp", "azure", "docker", "kubernetes", "k8s",
         "python", "javascript", "typescript", "java", "go", "rust", "c",
@@ -192,11 +224,8 @@ def run_extraction() -> int:
         term_name = (item.get("term") or "").strip()
         if not term_name:
             continue
-        # 1文字は除外
         if len(term_name) <= 1:
-            logger.debug(f"[LLM] Skipped (too short): '{term_name}'")
             continue
-        # 既知用語・ノイズは除外
         if term_name.lower() in seen or term_name.lower() in NOISE_TERMS:
             continue
         seen.add(term_name.lower())
