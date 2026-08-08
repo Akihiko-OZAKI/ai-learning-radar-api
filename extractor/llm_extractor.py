@@ -37,18 +37,25 @@ DESC_TOKENS_PER_TERM = 500
 DESC_MIN_REMAINING = 5_000
 
 # ── LLMクライアントの初期化（Groq優先） ────────────────────────
+# デフォルトモデル名（環境変数で上書き可能）
+_DEFAULT_GROQ_MODEL  = "llama-3.3-70b-versatile"
+_DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+
+
 def _init_client():
     groq_key = os.environ.get("GROQ_API_KEY")
     openai_key = os.environ.get("OPENAI_API_KEY")
 
     if groq_key:
         from groq import Groq
-        logger.info("[LLM] Using Groq (llama-3.3-70b-versatile)")
-        return Groq(api_key=groq_key), "llama-3.3-70b-versatile", "groq"
+        model = os.environ.get("GROQ_MODEL", _DEFAULT_GROQ_MODEL)
+        logger.info(f"[LLM] Using Groq ({model})")
+        return Groq(api_key=groq_key), model, "groq"
     elif openai_key:
         from openai import OpenAI
-        logger.info("[LLM] Using OpenAI (gpt-4o-mini)")
-        return OpenAI(api_key=openai_key), "gpt-4o-mini", "openai"
+        model = os.environ.get("OPENAI_MODEL", _DEFAULT_OPENAI_MODEL)
+        logger.info(f"[LLM] Using OpenAI ({model})")
+        return OpenAI(api_key=openai_key), model, "openai"
     else:
         logger.warning("[LLM] No API key found. LLM extraction will be skipped.")
         return None, None, None
@@ -277,12 +284,21 @@ def run_extraction() -> int:
 
     # ── ノイズフィルタ ────────────────────────────────────────
     NOISE_TERMS = {
+        # 汎用インフラ・言語
         "aws", "gcp", "azure", "docker", "kubernetes", "k8s",
         "python", "javascript", "typescript", "java", "go", "rust", "c",
         "linux", "windows", "macos", "ios", "android",
         "git", "github", "gitlab", "npm", "pip",
         "sql", "mysql", "postgres", "mongodb", "redis",
         "html", "css", "json", "xml", "yaml",
+        # 汎用企業名（AI技術用語ではない）
+        "google", "microsoft", "amazon", "meta", "apple",
+        # 既知用語の重複・表記バリエーション（再登録防止）
+        "claude ai", "anthropic claude", "chatgpt api",
+        "mcp-server", "mcp servers", "mcp server",
+        "transformer transformer",
+        # 曖昧な略称
+        "paddle",
     }
 
     seen: set[str] = set(known_terms)
