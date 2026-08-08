@@ -10,20 +10,31 @@ LLMの使用は「新規用語発見・テーマ付与・説明文生成」の�
   どちらもない場合 → スキップ
 
 TPD上限対策:
-  既知用語名を含むテキストを除外し、未知テキストのみをLLMに投げる。
-  処理量を大幅削減（約1/6〜1/8）してGroq無料枠のTPD上限を回避する。
+  1. 既知用語名を含むテキストを除外し、未知テキストのみをLLMに投げる。
+     処理量を大幅削減（約1/6〜1/8）してGroq無料枠のTPD上限を回避する。
+  2. 説明文生成はTPD残量を確認し、余裕がある場合のみ実行する。
+     TPD残量が不足する場合は空文字で登録し、翌日以降に生成する。
 """
 
 import json
 import logging
 import os
 import textwrap
+import time
 from datetime import date
 from typing import Optional
 
 from db import get_connection, get_raw_connection
 
 logger = logging.getLogger(__name__)
+
+# ── TPD管理 ────────────────────────────────────────────────────────
+# 1日あたりのトークン上限（Groq無料プラン）
+TPD_LIMIT = 100_000
+# 説明文生成1件あたりの推定トークン数（プロンプト+レスポンス）
+DESC_TOKENS_PER_TERM = 500
+# 説明文生成を実行するために必要な最低残量（バッファ込み）
+DESC_MIN_REMAINING = 5_000
 
 # ── LLMクライアントの初期化（Groq優先） ────────────────────────
 def _init_client():
@@ -43,6 +54,9 @@ def _init_client():
         return None, None, None
 
 client, LLM_MODEL, LLM_PROVIDER = _init_client()
+
+# セッション内のトークン消費量を追跡
+_tokens_used_this_session: int = 0
 
 THEME_OPTIONS = [
     "llm", "ai_coding", "ai_agent", "tool_integration",
@@ -115,6 +129,7 @@ def _build_extraction_prompt(texts: list[str], known_terms: set[str]) -> str:
 
 def _call_llm(prompt: str, max_tokens: int = 1024) -> str:
     """LLMを呼び出してテキストを返す（Groq/OpenAI共通インターフェース）。"""
+    global _tokens_used_this_session
     if client is None:
         return '{"terms":[]}'
     resp = client.chat.completions.create(
@@ -122,7 +137,17 @@ def _call_llm(prompt: str, max_tokens: int = 1024) -> str:
         messages=[{"role": "user", "content": prompt}],
         max_tokens=max_tokens,
     )
+    # トークン消費量を記録
+    if hasattr(resp, 'usage') and resp.usage:
+        used = resp.usage.total_tokens
+        _tokens_used_this_session += used
+        logger.debug(f"[LLM] Tokens used this call: {used}, session total: {_tokens_used_this_session:,}")
     return resp.choices[0].message.content or '{"terms":[]}'
+
+
+def _estimate_tpd_remaining() -> int:
+    """セッション内のトークン消費から残量を推定する。"""
+    return max(0, TPD_LIMIT - _tokens_used_this_session)
 
 
 def _extract_terms_from_texts(texts: list[str], known_terms: set[str]) -> list[dict]:
@@ -240,7 +265,7 @@ def run_extraction() -> int:
         logger.warning("[LLM] No texts to extract from. Skipping.")
         return 0
 
-    # ── TPD上限対策: 既知用語を含むテキストを除外 ────────────────
+    # ── TPD上限対策1: 既知用語を含むテキストを除外 ────────────────
     texts = _filter_unknown_texts(all_texts, known_terms)
 
     if not texts:
@@ -275,15 +300,31 @@ def run_extraction() -> int:
 
     logger.info(f"[LLM] {len(new_terms)} new term candidates found.")
 
+    # ── TPD上限対策2: 説明文生成はTPD残量に応じて上限を設定 ────────
+    tpd_remaining = _estimate_tpd_remaining()
+    desc_budget = max(0, (tpd_remaining - DESC_MIN_REMAINING) // DESC_TOKENS_PER_TERM)
+    logger.info(
+        f"[LLM] TPD session usage: {_tokens_used_this_session:,}/{TPD_LIMIT:,} tokens. "
+        f"Remaining: ~{tpd_remaining:,}. Description budget: {desc_budget}/{len(new_terms)} terms."
+    )
+
     conn = get_connection()
     registered = 0
+    desc_generated = 0
     with conn:
         for item in new_terms:
             term_name = item["term"].strip()
             theme_key = item.get("theme", "other")
             category = item.get("category", "Other")
             theme_id = _get_theme_id(theme_key)
-            description = _generate_description(term_name)
+            # TPD残量がある場合のみ説明文を生成
+            if desc_generated < desc_budget:
+                description = _generate_description(term_name)
+                if description:
+                    desc_generated += 1
+            else:
+                description = ""
+                logger.debug(f"[LLM] Skipping description for '{term_name}' (TPD budget exhausted)")
             conn.execute(
                 """INSERT OR IGNORE INTO terms
                     (term_name, theme_id, category, first_seen, last_seen, description, is_permanent)
@@ -293,5 +334,9 @@ def run_extraction() -> int:
             registered += 1
 
     conn.close()
-    logger.info(f"[LLM] Registered {registered} new terms.")
+    logger.info(
+        f"[LLM] Registered {registered} new terms. "
+        f"Descriptions: {desc_generated}/{registered}. "
+        f"Final session tokens: {_tokens_used_this_session:,}/{TPD_LIMIT:,}."
+    )
     return registered
