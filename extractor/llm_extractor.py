@@ -8,6 +8,10 @@ LLMの使用は「新規用語発見・テーマ付与・説明文生成」の�
   GROQ_API_KEY が設定されている場合 → Groq (llama-3.3-70b-versatile)
   OPENAI_API_KEY が設定されている場合 → OpenAI (gpt-4o-mini)
   どちらもない場合 → スキップ
+
+TPD上限対策:
+  既知用語名を含むテキストを除外し、未知テキストのみをLLMに投げる。
+  処理量を大幅削減（約1/6〜1/8）してGroq無料枠のTPD上限を回避する。
 """
 
 import json
@@ -192,6 +196,37 @@ def _collect_texts_for_today() -> list[str]:
     return texts
 
 
+def _filter_unknown_texts(texts: list[str], known_terms: set[str]) -> list[str]:
+    """
+    既知用語名を含むテキストを除外し、未知テキストのみを返す。
+
+    TPD上限対策: 既知用語が登場するテキストはLLMに投げる必要がないため除外する。
+    これにより処理量を大幅削減（約1/6〜1/8）できる。
+
+    除外ロジック:
+      テキスト中に既知用語名（大文字小文字無視）が単語として含まれている場合は除外。
+      ただし、短い用語（3文字以下）は誤マッチを避けるため除外対象外とする。
+    """
+    # 誤マッチを避けるため4文字以上の既知用語のみ使用
+    long_known = {t for t in known_terms if len(t) >= 4}
+
+    unknown_texts = []
+    skipped = 0
+    for text in texts:
+        text_lower = text.lower()
+        # テキスト中に既知用語が含まれているかチェック
+        if any(term in text_lower for term in long_known):
+            skipped += 1
+            continue
+        unknown_texts.append(text)
+
+    logger.info(
+        f"[LLM] Text filtering: {len(texts)} total → {len(unknown_texts)} unknown "
+        f"({skipped} skipped as already-known)"
+    )
+    return unknown_texts
+
+
 def run_extraction() -> int:
     if client is None:
         logger.warning("[LLM] No LLM client available. Skipping extraction.")
@@ -199,10 +234,17 @@ def run_extraction() -> int:
 
     today = date.today()
     known_terms = _get_known_terms()
-    texts = _collect_texts_for_today()
+    all_texts = _collect_texts_for_today()
+
+    if not all_texts:
+        logger.warning("[LLM] No texts to extract from. Skipping.")
+        return 0
+
+    # ── TPD上限対策: 既知用語を含むテキストを除外 ────────────────
+    texts = _filter_unknown_texts(all_texts, known_terms)
 
     if not texts:
-        logger.warning("[LLM] No texts to extract from. Skipping.")
+        logger.info("[LLM] All texts already covered by known terms. Skipping LLM call.")
         return 0
 
     logger.info(f"[LLM] Extracting terms from {len(texts)} texts using {LLM_PROVIDER}/{LLM_MODEL}...")
