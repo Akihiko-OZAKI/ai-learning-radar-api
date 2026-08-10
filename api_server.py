@@ -375,6 +375,71 @@ def get_term_news(
     return {"term_name": term_name, "items": [dict(r) for r in rows]}
 
 
+@app.get("/api/term/{term_name}/related")
+def get_related_terms(
+    term_name: str,
+    limit: int = Query(5, ge=1, le=10),
+):
+    """
+    同じテーマの関連用語を返す（自身を除くスコア上位N件）。
+
+    Returns:
+        {
+            "term_name": str,
+            "theme_name": str,
+            "items": [
+                {
+                    "term_name": str,
+                    "total_score": float,
+                    "rank": int | null
+                }
+            ]
+        }
+    """
+    d = _latest_date()
+    conn = get_connection()
+
+    # 対象用語の theme_id を取得
+    term_row = conn.execute(
+        """
+        SELECT t.term_id, t.theme_id, th.theme_name
+        FROM terms t
+        LEFT JOIN themes th ON t.theme_id = th.theme_id
+        WHERE LOWER(t.term_name) = LOWER(?)
+        """,
+        (term_name,),
+    ).fetchone()
+
+    if not term_row or not term_row["theme_id"]:
+        conn.close()
+        return {"term_name": term_name, "theme_name": None, "items": []}
+
+    # 同テーマの他の用語をスコア順に取得
+    rows = conn.execute(
+        """
+        SELECT
+            t.term_name,
+            ROUND(ds.total_score, 0) AS total_score,
+            ds.rank
+        FROM terms t
+        JOIN daily_scores ds ON t.term_id = ds.term_id
+        WHERE t.theme_id = ?
+          AND t.term_id != ?
+          AND ds.date = ?
+        ORDER BY ds.total_score DESC
+        LIMIT ?
+        """,
+        (term_row["theme_id"], term_row["term_id"], d, limit),
+    ).fetchall()
+    conn.close()
+
+    return {
+        "term_name": term_name,
+        "theme_name": term_row["theme_name"],
+        "items": [dict(r) for r in rows],
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)
