@@ -137,16 +137,25 @@ def get_theme_ranking(
     date: Optional[str] = Query(None),
     limit: int = Query(9, ge=1, le=20),
 ):
-    """テーマランキング（テーマ別 total_score 合計の降順）。"""
+    """テーマランキング（テーマ別 total_score 合計の降順）。
+    追加フィールド:
+      - top_term: その日最高スコアの用語名
+      - avg_score: テーマ内用語の平均スコア
+      - rising_count: 当日急上昇中（rank_change > 0）の用語数
+    """
     d = date or _latest_date()
     conn = get_connection()
+
+    # テーマ別集計
     rows = conn.execute(
         """
         SELECT
             th.theme_key,
             th.theme_name,
-            ROUND(SUM(ds.total_score), 1) AS total_score,
-            COUNT(ds.term_id) AS term_count
+            ROUND(SUM(ds.total_score), 0) AS total_score,
+            COUNT(ds.term_id) AS term_count,
+            ROUND(AVG(ds.total_score), 0) AS avg_score,
+            SUM(CASE WHEN ds.rank_change > 0 THEN 1 ELSE 0 END) AS rising_count
         FROM daily_scores ds
         JOIN terms t ON ds.term_id = t.term_id
         JOIN themes th ON t.theme_id = th.theme_id
@@ -157,8 +166,33 @@ def get_theme_ranking(
         """,
         (d, limit),
     ).fetchall()
+
+    # 各テーマのトップ用語を別クエリで取得
+    theme_top_terms = {}
+    for row in rows:
+        top = conn.execute(
+            """
+            SELECT t.term_name
+            FROM daily_scores ds
+            JOIN terms t ON ds.term_id = t.term_id
+            JOIN themes th ON t.theme_id = th.theme_id
+            WHERE ds.date = ? AND th.theme_key = ?
+            ORDER BY ds.total_score DESC
+            LIMIT 1
+            """,
+            (d, row["theme_key"]),
+        ).fetchone()
+        theme_top_terms[row["theme_key"]] = top["term_name"] if top else None
+
     conn.close()
-    return {"date": d, "items": [dict(r) for r in rows]}
+
+    items = []
+    for r in rows:
+        item = dict(r)
+        item["top_term"] = theme_top_terms.get(r["theme_key"])
+        items.append(item)
+
+    return {"date": d, "items": items}
 
 
 @app.get("/api/ranking/new")

@@ -73,11 +73,29 @@ CATEGORY_OPTIONS = ["Model", "Tool", "Framework", "Protocol", "Agent", "Library"
 CHUNK_SIZE = 80
 
 
+def _normalize_term(name: str) -> str:
+    """
+    用語名を正規化する（重複検出用）。
+    スペース・ハイフン・アンダースコアを除去し、小文字化する。
+    例: "Hugging Face" -> "huggingface", "Flash-Attention" -> "flashattention"
+    """
+    import re
+    return re.sub(r'[\s\-_]+', '', name.lower())
+
+
 def _get_known_terms() -> set[str]:
     conn = get_connection()
     rows = conn.execute("SELECT term_name FROM terms").fetchall()
     conn.close()
     return {row["term_name"].lower() for row in rows}
+
+
+def _get_normalized_known_terms() -> set[str]:
+    """正規化済みの既知用語セットを返す（重複検出用）。"""
+    conn = get_connection()
+    rows = conn.execute("SELECT term_name FROM terms").fetchall()
+    conn.close()
+    return {_normalize_term(row["term_name"]) for row in rows}
 
 
 def _get_theme_id(theme_key: str) -> Optional[int]:
@@ -266,6 +284,7 @@ def run_extraction() -> int:
 
     today = date.today()
     known_terms = _get_known_terms()
+    normalized_known = _get_normalized_known_terms()  # 重複検出用
     all_texts = _collect_texts_for_today()
 
     if not all_texts:
@@ -302,7 +321,9 @@ def run_extraction() -> int:
     }
 
     seen: set[str] = set(known_terms)
+    seen_normalized: set[str] = set(normalized_known)  # 正規化済みセット
     new_terms = []
+    skipped_dup = 0
     for item in extracted:
         term_name = (item.get("term") or "").strip()
         if not term_name:
@@ -311,10 +332,20 @@ def run_extraction() -> int:
             continue
         if term_name.lower() in seen or term_name.lower() in NOISE_TERMS:
             continue
+        # 正規化後の重複チェック（スペース・ハイフン・大小文字を無視）
+        norm = _normalize_term(term_name)
+        if norm in seen_normalized:
+            logger.debug(f"[LLM] Skipping duplicate (normalized): '{term_name}' -> '{norm}'")
+            skipped_dup += 1
+            continue
         seen.add(term_name.lower())
+        seen_normalized.add(norm)
         new_terms.append(item)
 
-    logger.info(f"[LLM] {len(new_terms)} new term candidates found.")
+    logger.info(
+        f"[LLM] {len(new_terms)} new term candidates found. "
+        f"({skipped_dup} skipped as normalized duplicates)"
+    )
 
     # ── TPD上限対策2: 説明文生成はTPD残量に応じて上限を設定 ────────
     tpd_remaining = _estimate_tpd_remaining()
