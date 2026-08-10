@@ -210,7 +210,8 @@ def get_new_terms(
             th.theme_name,
             t.category,
             t.first_seen,
-            ROUND(ds.total_score, 1) AS total_score
+            ROUND(ds.total_score, 1) AS total_score,
+            t.description
         FROM terms t
         LEFT JOIN themes th ON t.theme_id = th.theme_id
         LEFT JOIN daily_scores ds
